@@ -1,6 +1,7 @@
 
 import os
 import time
+from collections.abc import Callable
 
 import boto3
 from botocore.config import Config
@@ -44,13 +45,18 @@ class BedrockInferenceClient:
             ),
         )
 
-    def generate(self, prompt: str) -> InferenceResult:
+    def generate(
+        self,
+        prompt: str,
+        on_text: Callable[[str], None] | None = None,
+    ) -> InferenceResult:
+        """Consume a response stream, optionally forwarding each text delta."""
         if not prompt.strip():
             raise ValueError("Prompt must not be empty")
 
         start = time.perf_counter()
 
-        response = self.runtime.converse(
+        response = self.runtime.converse_stream(
             modelId=self.model_id,
             messages=[
                 {
@@ -64,26 +70,36 @@ class BedrockInferenceClient:
             },
         )
 
-        elapsed_ms = (
-            time.perf_counter() - start
-        ) * 1000
+        stream = response["stream"]
+        text_chunks = []
+        usage = None
+        stop_reason = None
+        try:
+            for event in stream:
+                if "contentBlockDelta" in event:
+                    delta = event["contentBlockDelta"]["delta"]
+                    if "text" in delta:
+                        text_chunks.append(delta["text"])
+                        if on_text is not None:
+                            on_text(delta["text"])
+                elif "messageStop" in event:
+                    stop_reason = event["messageStop"]["stopReason"]
+                elif "metadata" in event:
+                    usage = event["metadata"]["usage"]
+        finally:
+            stream.close()
 
-        content = response["output"]["message"]["content"]
-
-        text = "".join(
-            block.get("text", "")
-            for block in content
-        )
-
-        usage = response["usage"]
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if usage is None or stop_reason is None:
+            raise RuntimeError("Bedrock response stream ended without completion metadata")
 
         return InferenceResult(
-            text=text,
+            text="".join(text_chunks),
             model_id=self.model_id,
             input_tokens=usage["inputTokens"],
             output_tokens=usage["outputTokens"],
             total_tokens=usage["totalTokens"],
             latency_ms=round(elapsed_ms, 2),
-            stop_reason=response["stopReason"],
+            stop_reason=stop_reason,
         )
 
