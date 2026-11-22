@@ -19,11 +19,11 @@ Run the test suite from the repository root:
 
 ## Bedrock conventions
 
-- Use `converse_stream` for inference.
+- Use `converse` in the CLI client and `converse_stream` in the API generator.
 - Close response streams on success and failure.
 - Preserve token usage and stop reasons in completed results.
-- Propagate inference and callback failures; reject incomplete streams.
-- Keep optional text callbacks usable for displaying text as it arrives.
+- Propagate CLI inference failures; report API stream failures through generation events.
+- Reject incomplete API streams and forward text as it arrives.
 
 ## Testing and scope
 

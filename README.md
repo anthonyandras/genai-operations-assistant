@@ -1,8 +1,8 @@
 # GenAI Operations Assistant
 
 A Python prototype for generating operations guidance with Amazon Bedrock.
-Submit an incident description and receive diagnostic suggestions as the
-model generates them, through a streaming HTTP API or a terminal example.
+Submit an incident description through a streaming HTTP API, or run a
+terminal example that waits for the complete response using Converse.
 
 ## Problem and scope
 
@@ -28,8 +28,9 @@ flowchart LR
     Bedrock -->|"Text deltas, usage, stop reason"| Worker
     Worker -->|"Generation events"| API
     API -->|"Plain text or optional SSE"| Client
-    CLI["Terminal example: src/main.py"] --> Timed["BedrockInferenceClient: timing metrics"]
-    Timed -->|"Boto3 ConverseStream"| Bedrock
+    CLI["Terminal example: src/main.py"] --> Complete["BedrockInferenceClient: complete response + metrics"]
+    Complete -->|"Boto3 Converse"| Bedrock
+    Bedrock -->|"Complete response"| Complete
 ```
 
 The API's server is Uvicorn for HTTP/1.1 or Hypercorn for HTTP/2 and HTTP/3.
@@ -42,15 +43,16 @@ text deltas, which may contain multiple tokens.
 | `src/api.py` | Validate requests, obtain a cached Boto3 client, serialize streaming responses |
 | `src/ops_assistant/resilient_stream.py` | Translate Bedrock events, retry eligible failures, report completion/errors, close streams |
 | `src/ops_assistant/server.py` | Select protocol, bind address, and TLS configuration |
-| `src/ops_assistant/bedrock_client.py` | Collect a complete result while forwarding text callbacks and measuring chunk arrivals |
-| `src/main.py` | Run a fictional incident prompt and print streamed text plus measurements |
-| `tests/` | Verify streaming, client metrics, errors, and server configuration using fake runtimes |
+| `src/ops_assistant/bedrock_client.py` | Call Converse and return complete text, token usage, stop reason, and total latency |
+| `src/main.py` | Run a fictional incident prompt and print the completed response plus metrics |
+| `tests/` | Verify API streaming, complete CLI responses, errors, and server configuration using fake runtimes |
 | `hypercorn.toml` | Optional direct Hypercorn configuration, separate from the runtime launcher |
 
 ## Design decisions
 
-- **ConverseStream:** both inference paths use Bedrock's streaming interface
-  so the application can forward text before the full answer is ready.
+- **Separate inference interfaces:** the API uses `converse_stream` to forward
+  text before generation finishes. The CLI client uses `converse` and returns
+  a complete response; it has no text callback or chunk timing measurements.
 - **Plain text by default:** simple clients receive only model output. An
   optional SSE format adds explicit start, text, completion, and error events.
 - **Blocking SDK off the event loop:** the API advances Boto3's synchronous
@@ -103,8 +105,8 @@ some model/Region combinations require an inference profile rather than a
 bare model ID. See the [Nova Micro model details](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-micro.html)
 and [Bedrock model access requirements](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html).
 
-The runtime identity needs `bedrock:InvokeModelWithResponseStream` for the
-selected model. Here is an example policy for direct invocation of the two
+The API identity needs `bedrock:InvokeModelWithResponseStream`; the CLI
+identity needs `bedrock:InvokeModel` for its selected model. Here is an example policy for direct invocation of the two
 models used by this project in `us-east-1`:
 
 ```json
@@ -113,7 +115,7 @@ models used by this project in `us-east-1`:
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": "bedrock:InvokeModelWithResponseStream",
+      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
       "Resource": [
         "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0",
         "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"
@@ -128,6 +130,7 @@ organization policies, and provider-specific activation requirements can
 require additional configuration; this example covers direct model
 invocation only. See [AWS inference prerequisites](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-prereq.html)
 and the [ConverseStream API reference](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html).
+For CLI invocation, see the [Converse documentation](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-runtime/client/converse.html).
 
 Use an existing AWS credential profile or an IAM Identity Center session.
 For example, with an already configured SSO profile named `development`:
@@ -165,7 +168,8 @@ select Nova Lite for the API with:
 BEDROCK_MODEL_ID=amazon.nova-lite-v1:0 .venv/bin/python src/api.py
 ```
 
-For the terminal example with chunk timings and token metrics:
+For the terminal example with a complete response, total request latency,
+input/output/total token counts, and stop reason:
 
 ```sh
 .venv/bin/python src/main.py
@@ -388,12 +392,13 @@ not invoke Bedrock.
 - **Blocking upstream reads:** worker threads keep Boto3 off the event loop,
   but reads and retries can delay disconnect cleanup. No concurrency limit or
   load testing establishes a supported production throughput.
-- **Different inference paths:** the CLI's timeout/retry configuration and
-  chunk timing metrics are not used by the API generator. API SSE completion
-  includes token counts and stop reason, not the CLI timing measurements.
-- **Timing scope:** CLI timings measure arrivals observed by the Python client,
-  including network effects and any delays introduced by callbacks. A chunk
-  is not a token, and these measurements do not isolate model compute time.
+- **Different inference paths:** the CLI uses non-streaming Converse and its
+  own SDK timeout/retry configuration. The API generator continues streaming
+  and uses its separate retry policy. API SSE completion includes input/output
+  token counts and stop reason; the CLI also reports total tokens and latency.
+- **Timing scope:** CLI `latency_ms` measures the full Converse call at the
+  Python client, including network effects and SDK retries. It does not
+  measure time to first token, chunk arrivals, or isolated model compute time.
 - **Transport dependencies:** HTTP/3 requires working UDP, TLS, and a compatible
   client. HTTP/2 and HTTP/3 modes retain TCP fallback, so verify the negotiated
   version. Proxies and clients may buffer output despite application streaming.

@@ -1,4 +1,4 @@
-from ops_assistant.bedrock_client import BedrockInferenceClient
+from ops_assistant.resilient_stream import generate_resilient
 
 
 class FakeRuntime:
@@ -22,17 +22,11 @@ class FakeRuntime:
 
 
 def test_stream_assembles_text_and_usage():
-    client = BedrockInferenceClient(
-        model_id="test-model",
-        runtime=FakeRuntime(),
-    )
-    chunks = []
+    events = list(generate_resilient(FakeRuntime(), "test-model", "Say hello"))
 
-    result = client.generate("Say hello", on_text=chunks.append)
-
-    assert chunks == ["Hello ", "world"]
-    assert result.text == "".join(chunks) == "Hello world"
-    assert result.input_tokens == 12
-    assert result.output_tokens == 3
-    assert result.total_tokens == 15
-    assert result.stop_reason == "end_turn"
+    assert events[0].kind == "start"
+    assert [event.text for event in events if event.kind == "text"] == ["Hello ", "world"]
+    assert events[-1].kind == "complete"
+    assert events[-1].input_tokens == 12
+    assert events[-1].output_tokens == 3
+    assert events[-1].stop_reason == "end_turn"
