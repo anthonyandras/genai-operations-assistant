@@ -5,7 +5,12 @@ from collections.abc import Callable
 
 import boto3
 from botocore.config import Config
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class TextChunkTiming(BaseModel):
+    text: str
+    ms: float
 
 
 class InferenceResult(BaseModel):
@@ -16,6 +21,10 @@ class InferenceResult(BaseModel):
     total_tokens: int
     latency_ms: float
     stop_reason: str
+    time_to_first_text_ms: float | None = None
+    text_chunk_count: int = 0
+    text_chunk_arrival_ms: list[TextChunkTiming] = Field(default_factory=list)
+    text_chunk_intervals_ms: list[TextChunkTiming] = Field(default_factory=list)
 
 
 class BedrockInferenceClient:
@@ -27,7 +36,7 @@ class BedrockInferenceClient:
     ):
         self.model_id = model_id or os.getenv(
             "BEDROCK_MODEL_ID",
-            "amazon.nova-micro-v1:0",
+            "amazon.nova-lite-v1:0",
         )
 
         self.runtime = runtime or boto3.client(
@@ -50,7 +59,14 @@ class BedrockInferenceClient:
         prompt: str,
         on_text: Callable[[str], None] | None = None,
     ) -> InferenceResult:
-        """Consume a response stream, optionally forwarding each text delta."""
+        """Consume a stream, measuring text arrivals before invoking the callback.
+
+        Arrival times are relative to request start, measured at the client.
+        Text chunks can contain multiple tokens. Callback work can delay
+        consumption of subsequent chunks and contributes to total latency.
+        Each interval is paired with the chunk arriving after that interval;
+        the first nonempty chunk has no preceding chunk interval.
+        """
         if not prompt.strip():
             raise ValueError("Prompt must not be empty")
 
@@ -72,6 +88,7 @@ class BedrockInferenceClient:
 
         stream = response["stream"]
         text_chunks = []
+        text_arrivals_ms = []
         usage = None
         stop_reason = None
         try:
@@ -79,6 +96,8 @@ class BedrockInferenceClient:
                 if "contentBlockDelta" in event:
                     delta = event["contentBlockDelta"]["delta"]
                     if "text" in delta:
+                        if delta["text"]:
+                            text_arrivals_ms.append((time.perf_counter() - start) * 1000)
                         text_chunks.append(delta["text"])
                         if on_text is not None:
                             on_text(delta["text"])
@@ -101,5 +120,23 @@ class BedrockInferenceClient:
             total_tokens=usage["totalTokens"],
             latency_ms=round(elapsed_ms, 2),
             stop_reason=stop_reason,
+            time_to_first_text_ms=(
+                round(text_arrivals_ms[0], 2) if text_arrivals_ms else None
+            ),
+            text_chunk_count=len(text_arrivals_ms),
+            text_chunk_arrival_ms=[
+                TextChunkTiming(text=text, ms=round(arrival, 2))
+                for text, arrival in zip(
+                    (chunk for chunk in text_chunks if chunk), text_arrivals_ms
+                )
+            ],
+            text_chunk_intervals_ms=[
+                TextChunkTiming(text=text, ms=round(current - previous, 2))
+                for text, previous, current in zip(
+                    [chunk for chunk in text_chunks if chunk][1:],
+                    text_arrivals_ms,
+                    text_arrivals_ms[1:],
+                )
+            ],
         )
 

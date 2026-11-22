@@ -114,3 +114,51 @@ def test_callback_error_closes_stream():
     with pytest.raises(ValueError, match="Callback failed"):
         client.generate("Diagnose an incident.", on_text=on_text)
     assert runtime.stream.closed
+
+
+def test_text_arrival_measurements(monkeypatch):
+    clock = iter([10.0, 10.125, 10.375, 10.5])
+    monkeypatch.setattr(
+        "ops_assistant.bedrock_client.time.perf_counter", lambda: next(clock)
+    )
+    client = BedrockInferenceClient(runtime=FakeBedrockRuntime())
+
+    result = client.generate("Diagnose an incident.")
+
+    assert result.time_to_first_text_ms == 125.0
+    assert result.text_chunk_count == 2
+    metrics = result.model_dump(exclude={"text"})
+    assert metrics["text_chunk_arrival_ms"] == [
+        {"text": "Inspect ", "ms": 125.0},
+        {"text": "deployment changes.", "ms": 375.0},
+    ]
+    assert metrics["text_chunk_intervals_ms"] == [
+        {"text": "deployment changes.", "ms": 250.0},
+    ]
+    assert result.latency_ms == 500.0
+
+
+@pytest.mark.parametrize("texts", [[], [""], ["", "Hello"]])
+def test_empty_and_single_text_chunk_measurements(texts):
+    events = [
+        {"contentBlockDelta": {"delta": {"text": text}}}
+        for text in texts
+    ] + [
+        {"messageStop": {"stopReason": "end_turn"}},
+        {"metadata": {"usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}}},
+    ]
+    client = BedrockInferenceClient(runtime=FakeBedrockRuntime(events))
+
+    result = client.generate("Hello")
+
+    assert result.text_chunk_count == sum(bool(text) for text in texts)
+    assert len(result.text_chunk_arrival_ms) == result.text_chunk_count
+    assert [chunk.text for chunk in result.text_chunk_arrival_ms] == [
+        text for text in texts if text
+    ]
+    assert result.text_chunk_intervals_ms == []
+    if any(texts):
+        assert result.time_to_first_text_ms is not None
+        assert result.time_to_first_text_ms >= 0
+    else:
+        assert result.time_to_first_text_ms is None
