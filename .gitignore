@@ -11,3 +11,20 @@ wheels/
 
 # Local TLS certificates and private keys
 .certs/
+
+# Local environment and AWS credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+.aws/
+
+# Private keys and certificate bundles
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
