@@ -1,0 +1,7 @@
+# Local HTTPS over TCP, plus HTTP/3 over QUIC on UDP.
+bind = ["127.0.0.1:8443"]
+quic_bind = ["127.0.0.1:8443"]
+certfile = ".certs/localhost-cert.pem"
+keyfile = ".certs/localhost-key.pem"
+accesslog = "-"
+errorlog = "-"

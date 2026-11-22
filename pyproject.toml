@@ -6,11 +6,18 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.44.9",
+    "fastapi>=0.165.0",
     "pydantic>=2.14.4",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
 genai-operations-assistant = "genai_operations_assistant:main"
+
+[project.optional-dependencies]
+http3 = [
+    "hypercorn[h3]>=0.18.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
